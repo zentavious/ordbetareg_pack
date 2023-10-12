@@ -569,10 +569,14 @@ ordbetareg <- function(formula=NULL,
 
 
     class(out_obj) <- c(class(out_obj),"ordbetareg")
-
-    out_obj$upper_bound <- attr(data[[dv_pos]],'upper_bound')
-    out_obj$lower_bound <- attr(data[[dv_pos]],'lower_bound')
-
+    
+    if(length(dv)==1) {
+      out_obj$upper_bound <- attr(data[[dv_pos]],'upper_bound')
+      out_obj$lower_bound <- attr(data[[dv_pos]],'lower_bound')
+    } else {
+      out_obj$upper_bound <- attr(data[[dv_pos[[1]]]],'upper_bound')
+      out_obj$lower_bound <- attr(data[[dv_pos[[1]]]],'lower_bound')
+    }
 
 
 
