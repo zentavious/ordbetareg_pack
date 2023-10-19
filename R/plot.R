@@ -74,80 +74,164 @@ pp_check_ordbeta <- function(model=NULL,
     #define globals
 
     pred <- draw <- true <- NULL
-    
-    formula = model$formula
-
-    if('brmsformula' %in% class(formula)) {
-
-      dvs <- all.vars(formula$formula)[1]
-
-    } else if('mvbrmsformula' %in% class(formula)) {
-
-      dvs <- lapply(formula$forms, function(var) {
-
-        all.vars(var$formula)[1]
-
-      })
-
-    } else {
-
-      dvs <- all.vars(formula)[1]
-
-      #formula <- .update2.formula(formula, paste0(offset," + Intercept "))
-
-    }
-
-    
-    output <- list()
-
-    if (length(dvs) != 1) {
-        
-      output$discrete <- list()
-      output$continuous <- list()
-
-    }
 
     # need to get posterior predictive distribution
 
     full_dist <- posterior_predict(model,ndraws=ndraws,cores=NULL)
 
-    for (dv in dvs) {
-      outcome <- model$data[dv]
+    if(!is.null(outcome_label)) {
 
-      if(!is.null(outcome_label)) {
+      outcome_label <- outcome_label
 
-        outcome_label <- outcome_label
+    } else {
 
-      } else {
+      outcome_label <- names(model$data)[1]
 
-        outcome_label <- dv
-      }
+    }
 
-      this_star <- poly_star()
+    outcome <- model$data[outcome_label]
+
+    this_star <- poly_star()
+
+    if(reverse_bounds) {
+
+        # revert to original scale
+
+        l_bound <- model$lower_bound
+        up_bound <- model$upper_bound
+
+
+        full_dist <- apply(full_dist, 1, function(c) {
+
+          c <- (c *(up_bound - l_bound)) + l_bound
+
+          c
+
+        }) %>% t
+
+        outcome <- (outcome *(up_bound - l_bound)) + l_bound
+        # deal with floating point errors
+
+        tol <- 1e-5
+
+        outcome[abs(outcome - up_bound) < tol] <- up_bound
+        outcome[abs(outcome - l_bound) < tol] <- l_bound
+
+    } else {
+
+      l_bound <- 0
+      up_bound <- 1
+
+    }
+
+    output <- list()
+
+    if(is.null(group)) {
+
+      group <- rep(1, length(outcome))
+
+    }
+
+    if(type %in% c("both","discrete")) {
+
+
+          plot_data_bar <- lapply(unique(group), function(g) {
+
+                apply(full_dist[,group==g], 1, function(c) {
+
+                  tibble(num_ones=sum(c==up_bound),
+                         num_zeroes=sum(c==l_bound),
+                         num_cont=sum(c<up_bound & c>l_bound),
+                         group=g)
+
+                }) %>% bind_rows
+
+            }) %>% bind_rows
+
+          plot_data_bar$iter <- 1:nrow(plot_data_bar)
+
+          plot_data_bar <- bind_rows(select(plot_data_bar, var="num_ones", group) %>% mutate(true=sum(outcome==up_bound,na.rm=T),
+                                                                                             type=as.character(round(up_bound,3))),
+                                     select(plot_data_bar, var="num_zeroes", group) %>% mutate(true=sum(outcome==l_bound,na.rm=T),
+                                                                                               type=as.character(round(l_bound,3))),
+                                     select(plot_data_bar, var="num_cont", group) %>% mutate(true=sum(outcome>l_bound & outcome<up_bound,na.rm=T),
+                                                                                                   type=paste0('(',round(l_bound,3),
+                                                                                                               ',',round(up_bound,3),
+                                                                                                               ')'))) %>%
+                          mutate(type=factor(type,
+                                             levels=c(round(l_bound,3),
+                                                      paste0('(',round(l_bound,3),
+                                                             ',',round(up_bound,3),
+                                                             ')'),
+                                 round(up_bound,3))))
+
+          true_data_bar <- lapply(unique(group), function(g) {
+
+                        tibble(type=c(round(l_bound,3),
+                                         round(up_bound,3),
+                                         paste0('(',round(l_bound,3),
+                                                                 ',',round(up_bound,3),
+                                                                 ')')),
+                                  true=c(sum(outcome[group==g]==l_bound,na.rm=T),
+                                         sum(outcome[group==g]==up_bound,na.rm=T),
+                                         sum(outcome[group==g]>l_bound & outcome[group==g]<up_bound,na.rm=T))) %>%
+                                  mutate(type=factor(type,
+                                                     levels=c(round(l_bound,3),
+                                                              paste0('(',round(l_bound,3),
+                                                                     ',',round(up_bound,3),
+                                                                     ')'),
+                                                              round(up_bound,3))),
+                                         group=g)
+
+                            }) %>% bind_rows
+
+
+
+          bar_plot <- ggplot(plot_data_bar,
+                             aes(x=type,y=var)) +
+            geom_col(data=true_data_bar, aes(y=true),width=.5,fill="gray") +
+            stat_summary(fun.data="median_hilow",geom = "pointrange") +
+            labs(y="Observed and Estimated Counts",
+                 x=paste0("No. of Discrete and Continuous Observations in ", outcome_label),
+                 caption="Estimates are posterior medians with 5% and 95% high/low quantiles.\nCount of discrete values in data are represented by gray bars.") +
+            ggtitle("Posterior Predictions for Types of Responses in Data",
+                    subtitle=paste0("Outcome: ",outcome_label)) +
+            theme_minimal()
+
+          # add in facets if groups>1
+
+          if(length(unique(plot_data_bar$group))>1) {
+
+            bar_plot <- bar_plot + facet_wrap(~group,
+                                              scales=facet_scales)
+          }
+
+
+          output$discrete <- bar_plot + new_theme
+
+    }
+
+    if(type %in% c("both","continuous")) {
+
+      # need to change the posterior predict function to get the argument from ...
+
+      cont_dist <- posterior_predict(model,ndraws=ndraws,cores=NULL,ntrys=100)
 
       if(reverse_bounds) {
 
-          # revert to original scale
+        # revert to original scale
 
-          l_bound <- model$lower_bound
-          up_bound <- model$upper_bound
+        l_bound <- model$lower_bound
+        up_bound <- model$upper_bound
 
 
-          full_dist <- apply(full_dist, 1, function(c) {
+        cont_dist <- apply(cont_dist, 1, function(c) {
 
-            c <- (c *(up_bound - l_bound)) + l_bound
+          c <- (c *(up_bound - l_bound)) + l_bound
 
-            c
+          c
 
-          }) %>% t
-
-          outcome <- (outcome *(up_bound - l_bound)) + l_bound
-          # deal with floating point errors
-
-          tol <- 1e-5
-
-          outcome[abs(outcome - up_bound) < tol] <- up_bound
-          outcome[abs(outcome - l_bound) < tol] <- l_bound
+        }) %>% t
 
       } else {
 
@@ -156,209 +240,79 @@ pp_check_ordbeta <- function(model=NULL,
 
       }
 
-      if(is.null(group)) {
+      # if prediction was continuous, get continuous value from the outcome
 
-        group <- rep(1, length(outcome))
+      plot_data_dens <- lapply(unique(group), function(g) {
 
-      }
+        counter <- 0
 
-      if(type %in% c("both","discrete")) {
+        apply(cont_dist[,group==g], 1, function(col) {
 
-            plot_data_bar <- lapply(unique(group), function(g) {
+          counter <<- counter + 1
 
-                  apply(full_dist[,group==g], 1, function(c) {
-
-                    tibble(num_ones=sum(c==up_bound),
-                          num_zeroes=sum(c==l_bound),
-                          num_cont=sum(c<up_bound & c>l_bound),
-                          group=g)
-
-                  }) %>% bind_rows
-
-              }) %>% bind_rows
-
-            plot_data_bar$iter <- 1:nrow(plot_data_bar)
-
-            plot_data_bar <- bind_rows(select(plot_data_bar, var="num_ones", group) %>% mutate(true=sum(outcome==up_bound,na.rm=T),
-                                                                                              type=as.character(round(up_bound,3))),
-                                      select(plot_data_bar, var="num_zeroes", group) %>% mutate(true=sum(outcome==l_bound,na.rm=T),
-                                                                                                type=as.character(round(l_bound,3))),
-                                      select(plot_data_bar, var="num_cont", group) %>% mutate(true=sum(outcome>l_bound & outcome<up_bound,na.rm=T),
-                                                                                                    type=paste0('(',round(l_bound,3),
-                                                                                                                ',',round(up_bound,3),
-                                                                                                                ')'))) %>%
-                            mutate(type=factor(type,
-                                              levels=c(round(l_bound,3),
-                                                        paste0('(',round(l_bound,3),
-                                                              ',',round(up_bound,3),
-                                                              ')'),
-                                  round(up_bound,3))))
-
-            true_data_bar <- lapply(unique(group), function(g) {
-
-                          tibble(type=c(round(l_bound,3),
-                                          round(up_bound,3),
-                                          paste0('(',round(l_bound,3),
-                                                                  ',',round(up_bound,3),
-                                                                  ')')),
-                                    true=c(sum(outcome[group==g]==l_bound,na.rm=T),
-                                          sum(outcome[group==g]==up_bound,na.rm=T),
-                                          sum(outcome[group==g]>l_bound & outcome[group==g]<up_bound,na.rm=T))) %>%
-                                    mutate(type=factor(type,
-                                                      levels=c(round(l_bound,3),
-                                                                paste0('(',round(l_bound,3),
-                                                                      ',',round(up_bound,3),
-                                                                      ')'),
-                                                                round(up_bound,3))),
-                                          group=g)
-
-                              }) %>% bind_rows
-
-
-
-            bar_plot <- ggplot(plot_data_bar,
-                              aes(x=type,y=var)) +
-              geom_col(data=true_data_bar, aes(y=true),width=.5,fill="gray") +
-              stat_summary(fun.data="median_hilow",geom = "pointrange") +
-              labs(y="Observed and Estimated Counts",
-                  x=paste0("No. of Discrete and Continuous Observations in ", outcome_label),
-                  caption="Estimates are posterior medians with 5% and 95% high/low quantiles.\nCount of discrete values in data are represented by gray bars.") +
-              ggtitle("Posterior Predictions for Types of Responses in Data",
-                      subtitle=paste0("Outcome: ",outcome_label)) +
-              theme_minimal()
-
-            # add in facets if groups>1
-
-            if(length(unique(plot_data_bar$group))>1) {
-
-              bar_plot <- bar_plot + facet_wrap(~group,
-                                                scales=facet_scales)
-            }
-
-            if (length(dvs) == 1) {
-
-              output$discrete <- bar_plot + new_theme
-
-            } else {
-
-              output$discrete[dv] <- bar_plot + new_theme
-
-            }
-
-      }
-
-      if(type %in% c("both","continuous")) {
-
-        # need to change the posterior predict function to get the argument from ...
-
-        cont_dist <- posterior_predict(model,ndraws=ndraws,cores=NULL,ntrys=100)
-
-        if(reverse_bounds) {
-
-          # revert to original scale
-
-          l_bound <- model$lower_bound
-          up_bound <- model$upper_bound
-
-
-          cont_dist <- apply(cont_dist, 1, function(c) {
-
-            c <- (c *(up_bound - l_bound)) + l_bound
-
-            c
-
-          }) %>% t
-
-        } else {
-
-          l_bound <- 0
-          up_bound <- 1
-
-        }
-
-        # if prediction was continuous, get continuous value from the outcome
-
-        plot_data_dens <- lapply(unique(group), function(g) {
-
-          counter <- 0
-
-          apply(cont_dist[,group==g], 1, function(col) {
-
-            counter <<- counter + 1
-
-            tibble(pred=col[!(col %in% c(l_bound,up_bound))],
-                            draw=counter,
-                  group=g)
-
-          }) %>% bind_rows
+          tibble(pred=col[!(col %in% c(l_bound,up_bound))],
+                          draw=counter,
+                 group=g)
 
         }) %>% bind_rows
 
-        true_data <- lapply(unique(group), function(g) {
+      }) %>% bind_rows
 
-          tibble(true=outcome[!(outcome %in% c(l_bound,up_bound)) & group==g]) %>%
-            mutate(group=g)
+      true_data <- lapply(unique(group), function(g) {
 
-        }) %>% bind_rows
+        tibble(true=outcome[!(outcome %in% c(l_bound,up_bound)) & group==g]) %>%
+          mutate(group=g)
 
-        if(animate) {
+      }) %>% bind_rows
 
-
-          cont_plot <- plot_data_dens %>%
-            ggplot(aes(x=pred)) +
-            geom_density(alpha=0.7,bounds=c(l_bound,up_bound)) +
-            theme_minimal() +
-            labs(y="Probability Density",x=paste0("Continuous values of ",outcome_label),
-                caption="Each black line is a draw from the posterior distribution.\nData distribution represented by gray line.") +
-            transition_time(draw) +
-            ease_aes('elastic-in-out') +
-            ggtitle(paste0("Posterior Predictions for Data Bounded from ",
-                          round(l_bound,3), " to ", round(up_bound,3)),
-                    subtitle=paste0("Outcome: ",outcome_label))
-
-        } else {
-
-          cont_plot <- plot_data_dens %>%
-            ggplot(aes(x=pred,group=draw)) +
-            geom_density(alpha=0.7,bounds=c(l_bound,up_bound)) +
-            theme_minimal() +
-            labs(y="Probability Density",x=paste0("Continuous values of ",outcome_label),
-                caption="Each black line is a draw from the posterior distribution.\nData distribution represented by gray line.") +
-            ggtitle(paste0("Posterior Predictions for Data Bounded from ",
-                          round(l_bound,3), " to ", round(up_bound,3)),
-                    subtitle=paste0("Outcome: ",outcome_label))
+      if(animate) {
 
 
-        }
+        cont_plot <- plot_data_dens %>%
+          ggplot(aes(x=pred)) +
+          geom_density(alpha=0.7,bounds=c(l_bound,up_bound)) +
+          theme_minimal() +
+          labs(y="Probability Density",x=paste0("Continuous values of ",outcome_label),
+               caption="Each black line is a draw from the posterior distribution.\nData distribution represented by gray line.") +
+          transition_time(draw) +
+          ease_aes('elastic-in-out') +
+          ggtitle(paste0("Posterior Predictions for Data Bounded from ",
+                         round(l_bound,3), " to ", round(up_bound,3)),
+                  subtitle=paste0("Outcome: ",outcome_label))
 
-        # add in facets if groups>1
+      } else {
 
-        if(length(unique(plot_data_bar$group))>1) {
+        cont_plot <- plot_data_dens %>%
+          ggplot(aes(x=pred,group=draw)) +
+          geom_density(alpha=0.7,bounds=c(l_bound,up_bound)) +
+          theme_minimal() +
+          labs(y="Probability Density",x=paste0("Continuous values of ",outcome_label),
+               caption="Each black line is a draw from the posterior distribution.\nData distribution represented by gray line.") +
+          ggtitle(paste0("Posterior Predictions for Data Bounded from ",
+                         round(l_bound,3), " to ", round(up_bound,3)),
+                  subtitle=paste0("Outcome: ",outcome_label))
 
-          cont_plot <- cont_plot + facet_wrap(~group,
-                                              scales=facet_scales)
-        }
-
-        cont_plot <- cont_plot + geom_density(data=true_data,
-                                              mapping=aes(x=true),
-                                              linewidth=2,colour="gray",alpha=0.7,
-                                              bounds=c(l_bound,up_bound)) +
-          new_theme
-
-        if (length(dvs) == 1) {
-
-          output$continuous <- cont_plot
-
-        } else {
-          
-          output$continuous[dv] <- cont_plot
-
-        }
 
       }
+
+      # add in facets if groups>1
+
+      if(length(unique(plot_data_bar$group))>1) {
+
+        cont_plot <- cont_plot + facet_wrap(~group,
+                                            scales=facet_scales)
+      }
+
+      cont_plot <- cont_plot + geom_density(data=true_data,
+                                            mapping=aes(x=true),
+                                            linewidth=2,colour="gray",alpha=0.7,
+                                            bounds=c(l_bound,up_bound)) +
+        new_theme
+
+      output$continuous <- cont_plot
+
 
     }
-
 
     return(output)
 
